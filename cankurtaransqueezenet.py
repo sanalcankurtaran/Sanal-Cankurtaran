@@ -4,12 +4,16 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import numpy as np
 import cv2
 import os
+import matplotlib.pyplot as plt
+from tensorflow.keras.callbacks import LearningRateScheduler
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
 
-#Dataset
-trainingFolder = "C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\train"  #train dataset
-testFolder = "C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\test"    #test dataset
+# Datasets
+trainingFolder = "C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\train"  
+testFolder = "C:\\Users\\ruyaa\\OneDrive\\Desktop\\DATASET\\test"       
 
-#Define the SqueezeNet architecture
+# Define the SqueezeNet architecture
 def SqueezeNet(input_shape=(224, 224, 3), num_classes=3):
     input_layer = layers.Input(shape=input_shape)
 
@@ -42,12 +46,12 @@ def SqueezeNet(input_shape=(224, 224, 3), num_classes=3):
 
     return Model(inputs=input_layer, outputs=output_layer)
 
-#Building the model 
+# Build the model
 IMAGE_SIZE = [224, 224]
-NUM_CLASSES = len(os.listdir(trainingFolder))  # Sınıf sayısını klasörlerden alır
+NUM_CLASSES = len(os.listdir(trainingFolder))  
 model = SqueezeNet(input_shape=IMAGE_SIZE + [3], num_classes=NUM_CLASSES)
 
-#Compile the model 
+# Compile the model
 model.compile(
     loss='categorical_crossentropy',
     optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
@@ -56,7 +60,7 @@ model.compile(
 
 print(model.summary())
 
-#Data Augmentation
+# Data augmentation
 train_datagen = ImageDataGenerator(
     rescale=1./255,
     shear_range=0.2,
@@ -66,6 +70,7 @@ train_datagen = ImageDataGenerator(
 
 test_datagen = ImageDataGenerator(rescale=1./255)
 
+# Load training dataset
 training_set = train_datagen.flow_from_directory(
     trainingFolder,
     target_size=(224, 224),
@@ -73,6 +78,7 @@ training_set = train_datagen.flow_from_directory(
     class_mode='categorical'
 )
 
+# Load test dataset
 test_set = test_datagen.flow_from_directory(
     testFolder,
     target_size=(224, 224),
@@ -80,46 +86,109 @@ test_set = test_datagen.flow_from_directory(
     class_mode='categorical'
 )
 
+# Print class names
 class_names = list(training_set.class_indices.keys())
-print("Sınıf İsimleri:", class_names)
+print("Class Names:", class_names)
 
-#Train
-EPOCHS = 20  
-model.fit(
+
+def plot_training(history):
+    # Accuracy plot
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title('Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # Loss plot
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.show()
+
+# Learning rate scheduler function
+def lr_schedule(epoch, lr):
+    if epoch > 10:
+        return lr * 0.1  
+    return lr
+
+lr_scheduler = LearningRateScheduler(lr_schedule)
+
+# Training
+EPOCHS = 20
+history = model.fit(
     training_set,
     validation_data=test_set,
     epochs=EPOCHS,
     steps_per_epoch=len(training_set),
-    validation_steps=len(test_set)
+    validation_steps=len(test_set),
+    callbacks=[lr_scheduler]
 )
 
-#Save the model
-model.save("squeezenet_model.h5")
-print("Model başarıyla kaydedildi!")
+# Visualize training metrics
+plot_training(history)
 
-#Start the webcam
-cap = cv2.VideoCapture(1)  # 0, varsayılan kamerayı temsil eder;  1 dahili kamera olmadığı için kullanılır
+# Evaluate the model and plot confusion matrix
+def evaluate_model(model, test_set):
+    test_steps = len(test_set)
+    predictions = model.predict(test_set, steps=test_steps)
+    y_pred = np.argmax(predictions, axis=1)
+    y_true = test_set.classes
+
+    # Classification report
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred, target_names=class_names))
+
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.show()
+
+evaluate_model(model, test_set)
+
+# Convert the model 
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+with open("squeezenet_model.tflite", "wb") as f:
+    f.write(tflite_model)
+
+print("Model successfully converted to TFLite format!")
+
+# Start the webcam 
+cap = cv2.VideoCapture(1) 
 
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("Failed to capture webcam frame. Exiting...")
         break
 
     resized_frame = cv2.resize(frame, (224, 224))
     normalized_frame = resized_frame / 255.0
     input_frame = np.expand_dims(normalized_frame, axis=0)
 
-    #Perform prediction
+    # Perform prediction
     predictions = model.predict(input_frame)
     class_idx = np.argmax(predictions)
     class_label = class_names[class_idx]
 
-    #Display the classification result on the frame
+    # Display classification result on the frame
     cv2.putText(frame, f"Class: {class_label}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     cv2.imshow("Real-Time Object Detection", frame)
 
-    # Exit when the 'r' key is pressed
-    if cv2.waitKey(1) & 0xFF == ord('r'):
+    if cv2.waitKey(1) & 0xFF == ord('r'):  
         break
 
 cap.release()
